@@ -284,6 +284,8 @@ void *consume(void *arg){
 
 	/* Cast the void parameter into a type of struct param */
   	struct param *p = (struct param*) arg;
+  	char ip_address[INET6_ADDRSTRLEN];
+  	char temp[100];
 
   	/* Iterate through each domain name */
   	for(int i = 0; i < p->num_domains; i++){
@@ -296,13 +298,22 @@ void *consume(void *arg){
     	}
     
     	/* When the buffer is full, consume all the domain names in the buffer
-    		- TODO: If the domain name is "DOMAIN NAME EXCEEDED MAX LENGTH", don't do dns_lookup()
     		- Update the consumer index of the buffer
     		- Decrement the buffer index */
-	    printf("Consuming: %s\n", p->buffer[p->consumer_idx]);
-
 	    fputs(p->buffer[p->consumer_idx], p->consumer_log);
+	    fputs(",", p->consumer_log);
+	    memset(ip_address, 0, sizeof(ip_address));
+
+	    if(i < 21){
+		    strcpy(temp, p->buffer[p->consumer_idx]);
+
+		    if(dnslookup(temp, ip_address, INET6_ADDRSTRLEN) == 0){
+		    	fputs(ip_address, p->consumer_log);
+			}
+		}
+
 	    fputs("\n", p->consumer_log);
+    	
     	p->consumer_idx = (p->consumer_idx + 1) % BUFFER_SIZE;
     	p->buffer_idx--;
     
@@ -351,7 +362,6 @@ void *produce(void *arg){
       	
       			/* If the domain length is too long, write "DOMAIN NAME EXCEEDED MAX LENGTH" to the buffer */
 		      	if(strlen(line) > MAX_NAME_LENGTH){
-		      		printf("Producing: %s\n", "DOMAIN NAME EXCEEDED MAX LENGTH\n");
 		      		fputs("DOMAIN NAME EXCEEDED MAX LENGTH\n", p->producer_log);
 		      		strcpy(p->buffer[p->producer_idx], "DOMAIN NAME EXCEEDED MAX LENGTH");
       			}
@@ -361,7 +371,6 @@ void *produce(void *arg){
       			else{
       				fputs(line, p->producer_log);
 	      			line[strlen(line) - 1] = 0;
-      				printf("Producing: %s \n", line);
     	  			strcpy(p->buffer[p->producer_idx], line);
       			}
 
@@ -455,7 +464,6 @@ int main(int argc, char **argv){
   	/* Get number of data files */
   	num_data_files = get_num_data_files(argc);
   	struct Queue* queue = create_queue(num_data_files);
-  	//FILE **data_files = malloc(sizeof(FILE*) * num_data_files);
   	
   	/* Store all data files in a queue */
   	for(int i = 0; i < num_data_files; i++){
@@ -487,7 +495,7 @@ int main(int argc, char **argv){
 
 
 
-  	/* Initialize attributes of type struct param */
+  	/* Initialize elements of type struct param */
   	p.num_data_files = num_data_files;
   	p.num_data_files_done = 0;
   	p.num_domains = num_domains;
