@@ -413,7 +413,7 @@ void *produce(void *arg){
 
 
 
-//dnslookup(data_file_line, ip_address, INET6_ADDRSTRLEN);
+
 int main(int argc, char **argv){
 
 
