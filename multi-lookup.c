@@ -238,7 +238,7 @@ struct param{
 
 void *consume(void *arg){
 
-	printf("tid = %ld\n", gettid());
+	printf("consumer tid = %ld\n", gettid());
 
 	/* Cast the void parameter into a type of struct param */
   	struct param *p = (struct param*) arg;
@@ -247,9 +247,15 @@ void *consume(void *arg){
   	/* Iterate through each domain name */
   	while(p->num_domains_done < p->num_domains){
 
-  		printf("i = %d\n", i);
+  		printf("num domains done = %d\n", p->num_domains_done);
 
     	pthread_mutex_lock(&mutex);
+
+    	if(p->num_domains_done >= p->num_domains){
+    		pthread_cond_signal(&cond);
+    		pthread_mutex_unlock(&mutex);
+    		break;
+    	}
 
 		/* If the buffer is consumed empty, the consumer will wait() until the buffer is produced full or all files have been read */ 
 	    while(p->producer_idx == 0){
@@ -290,7 +296,7 @@ void *consume(void *arg){
 
   	}
 
-  	printf("Exit success\n");
+  	printf("consumer exit %ld\n", gettid());
 
 	return NULL;
 }
