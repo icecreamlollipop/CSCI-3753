@@ -38,6 +38,8 @@
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+pthread_mutex_t mutex_con = PTHREAD_MUTEX_INITIALIZER;
+
 /* README
 - To compile: gcc multi-lookup.c util.c -o multi-lookup -pthread -Wall -Wextra
 	- pthread: Allows usage of pthreads
@@ -197,52 +199,6 @@ int get_num_domains(FILE *fp){
 
 
 
-/* Queue of data files */
-struct Queue{
-	int head;
-	int tail;
-	FILE **data_files;
-	int size;
-	int capacity;
-};
-
-struct Queue* create_queue(int capacity){
-	struct Queue* queue = (struct Queue*) malloc(sizeof(struct Queue));
-	queue->capacity = capacity;
-	queue->head = queue->size = 0;
-	queue->tail = capacity - 1;
-  	FILE **array = malloc(sizeof(FILE*) * capacity);
-	queue->data_files = array;
-	return queue;
-}
-
-
-int is_empty(struct Queue* queue){
-	return (queue->size == 0);
-}
-
-void enqueue(struct Queue* queue, FILE *fp){
-	queue->tail = (queue->tail + 1) % queue->capacity;
-	queue->data_files[queue->tail] = fp;
-	queue->size = queue->size + 1;
-}
-
-FILE* dequeue(struct Queue* queue){
-	FILE *fp = queue->data_files[queue->head];
-	queue->head = (queue->head + 1) % queue->capacity;
-	queue->size = queue->size - 1;
-	return fp;
-}
-
-FILE* get_head(struct Queue* queue){
-	return queue->data_files[queue->head];
-}
-
-FILE* get_tail(struct Queue* queue){
-	return queue->data_files[queue->tail];
-}
-
-
 /* Parameter of thread functions
 - num_data_files: The number of data files to be serviced, total
 - num_data_files_done: The number of data files that have been serviced
@@ -256,9 +212,10 @@ struct param{
 	int num_data_files;
   	int num_data_files_done;
   	int num_domains;
-  	int buffer_idx;
+  	int num_domains_done;
   	int producer_idx;
   	int consumer_idx;
+  	int counter;
   	char (*buffer)[MAX_NAME_LENGTH];
   	FILE **data_files;
   	FILE *producer_log;
@@ -279,48 +236,61 @@ struct param{
 /* Consumer function
 - Input: p, a structure of type struct param */
 
-// TODO: Do dns_lookup() and write to results.txt instead of printing
 void *consume(void *arg){
+
+	printf("tid = %ld\n", gettid());
 
 	/* Cast the void parameter into a type of struct param */
   	struct param *p = (struct param*) arg;
   	char ip_address[INET6_ADDRSTRLEN];
-  	char temp[100];
 
   	/* Iterate through each domain name */
-  	for(int i = 0; i < p->num_domains; i++){
+  	while(p->num_domains_done < p->num_domains){
+
+  		printf("i = %d\n", i);
 
     	pthread_mutex_lock(&mutex);
 
-		/* If the buffer is empty, the consumer will wait() until the buffer is full */    
-	    while(p->buffer_idx == 0){
-    	  pthread_cond_wait(&cond, &mutex);
+		/* If the buffer is consumed empty, the consumer will wait() until the buffer is produced full or all files have been read */ 
+	    while(p->producer_idx == 0){
+    		pthread_cond_wait(&cond, &mutex);
     	}
     
     	/* When the buffer is full, consume all the domain names in the buffer
-    		- Update the consumer index of the buffer
-    		- Decrement the buffer index */
+    	- Write domain name to results.txt
+    	- Memset ip-address string
+    	- Copy domain name to temp string and perform dns_lookup() */
 	    fputs(p->buffer[p->consumer_idx], p->consumer_log);
 	    fputs(",", p->consumer_log);
+	    
 	    memset(ip_address, 0, sizeof(ip_address));
 
-	    if(i < 21){
-		    strcpy(temp, p->buffer[p->consumer_idx]);
-
-		    if(dnslookup(temp, ip_address, INET6_ADDRSTRLEN) == 0){
-		    	fputs(ip_address, p->consumer_log);
-			}
+		if(dnslookup(p->buffer[p->consumer_idx], ip_address, INET6_ADDRSTRLEN) == 0){
+		   	fputs(ip_address, p->consumer_log);
 		}
-
 	    fputs("\n", p->consumer_log);
+
+	    printf("p->consumer_idx = %d\n", p->consumer_idx);
+
     	
-    	p->consumer_idx = (p->consumer_idx + 1) % BUFFER_SIZE;
-    	p->buffer_idx--;
+    	/* Update the consumer index of the buffer */
+    	p->consumer_idx++;
+    	p->num_domains_done++;
+    	if(p->consumer_idx == BUFFER_SIZE){
+    		p->consumer_idx = 0;
+    		p->producer_idx = 0;
+    	}
     
     	/* When the buffer has been emptied, call signal() on producer */
-	    pthread_cond_signal(&cond);
+    	if(p->consumer_idx == 0){
+		    pthread_cond_signal(&cond);
+		}
+
     	pthread_mutex_unlock(&mutex);
+
   	}
+
+  	printf("Exit success\n");
 
 	return NULL;
 }
@@ -333,9 +303,8 @@ void *consume(void *arg){
 - Input: p, a structure of type struct param */
 
 // TODO: Print gettid() and num_serviced to serviced.txt before exiting
-//printf("%ld\n", gettid());
-
 void *produce(void *arg){
+
 
 	/* Cast the void parameter into a type of struct param */
   	struct param *p = (struct param*) arg;
@@ -346,28 +315,38 @@ void *produce(void *arg){
 
 
   	/* Service each data file, if the data file is valid */
-  	for(int i = 0; i < p->num_data_files; i++){		// TODO: While queue_empty() == FALSE
-    
-    	pthread_mutex_lock(&mutex);
-    
-    	/* If the file is valid, iterate through each domain name in the data file */
-    	if(p->data_files[i] != NULL){		// TODO: Keep track of next node in queue, which is the data file
+  	while(p->num_data_files_done < p->num_data_files){
 
-    		while(getline(&line, &n, p->data_files[i]) != -1){
+    	pthread_mutex_lock(&mutex);
+    	printf("tid = %ld\n", gettid());
     	
-    			/* If the buffer is full, the producer wait() until buffer is empty */
-    			while(p->buffer_idx == BUFFER_SIZE){
+
+    	/* If the file is valid, iterate through each domain name in the data file */
+    	printf("num data files done = %d\n", p->num_data_files_done);
+    	if(p->num_data_files_done >= p->num_data_files){
+    		pthread_cond_signal(&cond);
+    		pthread_mutex_unlock(&mutex);
+    		break;
+    	}
+
+    	if(p->data_files[p->num_data_files_done] != NULL){
+
+    		while(getline(&line, &n, p->data_files[p->num_data_files_done]) != -1){
+    	
+    			/* If the buffer is produced full, the producer will wait() until buffer is consumed empty */
+    			while(p->producer_idx == BUFFER_SIZE){
       				pthread_cond_wait(&cond, &mutex);
     			}
+
+    			printf("p->producer_idx = %d\n", p->producer_idx);
       	
       			/* If the domain length is too long, write "DOMAIN NAME EXCEEDED MAX LENGTH" to the buffer */
 		      	if(strlen(line) > MAX_NAME_LENGTH){
-		      		fputs("DOMAIN NAME EXCEEDED MAX LENGTH\n", p->producer_log);
 		      		strcpy(p->buffer[p->producer_idx], "DOMAIN NAME EXCEEDED MAX LENGTH");
       			}
 
       			/* When the buffer is empty, produce domain names to the buffer
-      				- Get rid of the '\n' at the end of the line */
+      			- Get rid of the '\n' at the end of the line */
       			else{
       				fputs(line, p->producer_log);
 	      			line[strlen(line) - 1] = 0;
@@ -375,24 +354,30 @@ void *produce(void *arg){
       			}
 
 
-	      		/* Update the producer index of the buffer
-	      			- Increment the buffer index */
-	    	  	p->producer_idx = (p->producer_idx + 1) % BUFFER_SIZE;
-    	  		p->buffer_idx++;
+	      		/* Update the producer index of the buffer */
+	    	  	p->producer_idx++;
+	    	  	p->counter++;
+	    	  	printf("p->counter = %d\n", p->counter);
 
-    	  		/* Call signal() on consumer when buffer is full, or all domain names have been read */
-	      		pthread_cond_signal(&cond);
+    	  		/* Call signal() on consumer when buffer is produced full, or all files have been read */
+    	  		if(p->producer_idx == BUFFER_SIZE || p->counter == p->num_domains){
+    	  			printf("\nsend signal p->producer_idx = %d\n", p->producer_idx);
+    	  			printf("send signal p->counter = %d\n\n", p->counter);
+	      			pthread_cond_signal(&cond);
+	      		}
+
+	      		printf("producer stuck 0\n");
     		}
 		}
 
 		/* Increment num data files serviced */
-	    p->num_data_files_done++;	// TODO: update queue pointer
-
-    	pthread_mutex_unlock(&mutex);
+	    p->num_data_files_done++;
+	    
+	    pthread_mutex_unlock(&mutex);
   	}
 
 	free(line);
-
+	printf("producer exit\n");
 	return NULL;
 }
 
@@ -440,7 +425,6 @@ int main(int argc, char **argv){
    		memset(buffer[i], 0, sizeof(buffer[i]));
   	}
   	struct param p;
-  	//char ip_address[INET6_ADDRSTRLEN];
 
 
 
@@ -457,38 +441,34 @@ int main(int argc, char **argv){
 
 
 
-  	// TODO: implement queue
-
 
   	
   	/* Get number of data files */
   	num_data_files = get_num_data_files(argc);
-  	struct Queue* queue = create_queue(num_data_files);
+  	FILE **data_files = malloc(sizeof(FILE*) * num_data_files);
   	
   	/* Store all data files in a queue */
   	for(int i = 0; i < num_data_files; i++){
 
-  		//queue->data_files[i] = open_data_files(argv[i + 5], queue->data_files[i], 0);
-
-  		enqueue(queue, open_data_files(argv[i + 5], queue->data_files[i], 0));
+  		data_files[i] = open_data_files(argv[i + 5], data_files[i], 0);
     	
     	/* Count the number of domains in each data file */
-    	if(queue->data_files[i] != NULL){
-    		num_domains += get_num_domains(queue->data_files[i]);
+    	if(data_files[i] != NULL){
+    		num_domains += get_num_domains(data_files[i]);
     	}
   	}
 
 
   	/* Close all data files to reset getline() */
   	for(int i = 0; i < num_data_files; i++){
-    	if(queue->data_files[i] != NULL){
-      		fclose(queue->data_files[i]);
+    	if(data_files[i] != NULL){
+      		fclose(data_files[i]);
     	}
   	}
 
   	/* Re-open all data files */
   	for(int i = 0; i < num_data_files; i++){
-    	queue->data_files[i] = open_data_files(argv[i + 5], queue->data_files[i], 1);
+    	data_files[i] = open_data_files(argv[i + 5], data_files[i], 1);
   	}
   
 
@@ -499,11 +479,12 @@ int main(int argc, char **argv){
   	p.num_data_files = num_data_files;
   	p.num_data_files_done = 0;
   	p.num_domains = num_domains;
-  	p.buffer_idx = 0;
+  	p.num_domains_done = 0;
+  	p.counter = 0;
   	p.producer_idx = 0;
   	p.consumer_idx = 0;
   	p.buffer = buffer;
-  	p.data_files = queue->data_files;
+  	p.data_files = data_files;
   	p.consumer_log = consumer_log;
   	p.producer_log = producer_log;
 
@@ -516,10 +497,8 @@ int main(int argc, char **argv){
 
 
 
-  	// TODO: if IP address is longer than 46 chars, skip it
-  	/* Create producer and consumer threads (who does dns lookup) */
 
-  	
+  	/* Create producer and consumer threads (who does dns lookup) */
   	pthread_t tids_producer[num_producer];
   	pthread_t tids_consumer[num_consumer];
 
@@ -552,14 +531,13 @@ int main(int argc, char **argv){
   	fclose(producer_log);
   	fclose(consumer_log);
   	for(int i = 0; i < num_data_files; i++){
-    	if(queue->data_files[i] != NULL){
-      		fclose(queue->data_files[i]);
+    	if(data_files[i] != NULL){
+      		fclose(data_files[i]);
     	}
   	}
   	
 
-  	free(queue->data_files);
-  	free(queue);
+  	free(data_files);
 
 	return 0;
 }
