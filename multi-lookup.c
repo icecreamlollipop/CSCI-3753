@@ -30,7 +30,7 @@
 #define MAX_CONSUMER 10
 #define MAX_DATA_FILES 10
 #define MAX_ARGUMENTS 15
-#define BUFFER_SIZE 5
+#define BUFFER_SIZE 20
 
 /* Synchronization tools:
 - condition variable
@@ -204,7 +204,8 @@ int get_num_domains(FILE *fp){
 - num_data_files: The number of data files to be serviced, total
 - num_data_files_done: The number of data files that have been serviced
 - num_domains: The number of domain names
-- buffer_idx: The index to put the element in buffer
+- num_consumed: The number of domain names consumed so far
+- num_produced: The number of domain names produced so far
 - producer_idx: Producer buffer index
 - consumer_idx: Consumer buffer index
 - buffer: The shared memory buffer
@@ -214,13 +215,17 @@ struct param{
   	int num_data_files_done;
   	int num_domains;
   	int num_consumed;
+  	int num_produced;
   	int producer_idx;
   	int consumer_idx;
-  	int num_produced;
   	char (*buffer)[MAX_NAME_LENGTH];
   	FILE **data_files;
   	FILE *producer_log;
   	FILE *consumer_log;
+
+  	int num_producer;
+  	int *tids;
+  	int *counter;
 };
 
 
@@ -236,7 +241,6 @@ struct param{
 
 /* Consumer function
 - Input: p, a structure of type struct param */
-
 void *consume(void *arg){
 
 
@@ -247,29 +251,28 @@ void *consume(void *arg){
   	/* All threads enter here */
   	while(1){
 
-  		printf("consumer flag 1\n");
+  		//printf("consumer flag %ld\n", gettid());
 
   		/* All threads are stuck here until the thread who is using this mutex lock, unlocks the mutex */
     	pthread_mutex_lock(&mutex_c);
 
-    	printf("consumer flag 2\n");
-
     	/* If all domains have been read, the thread that is using this mutex lock, unlocks the mutex, and exits */
     	if(p->num_consumed >= p->num_domains){
+    		//printf("num consumed = %d\n", p->num_consumed);
     		pthread_mutex_unlock(&mutex_c);
     		break;
     	}
 
 		/* If the buffer is consumed empty, the consumer will wait() for the full signal */
-		printf("producer idx 1 = %d\n", p->producer_idx); 
+		//printf("producer idx 1 = %d\n", p->producer_idx); 
 	    while(p->producer_idx == 0){
-	    	printf("consumer thread %ld is waiting\n", gettid());
+	    	//printf("consumer thread %ld is waiting\n", gettid());
     		pthread_cond_wait(&full, &mutex_temp);
-    		printf("consumer thread %ld has been woken up\n", gettid());
+    		//printf("consumer thread %ld has been woken up\n", gettid());
     	}
     
     	/* Consume all the domain names in the buffer */
-    	printf("consumer tid = %ld\n", gettid());
+    	//printf("consumer tid = %ld\n", gettid());
 
 	    fputs(p->buffer[p->consumer_idx], p->consumer_log);
 	    fputs(",", p->consumer_log);
@@ -279,12 +282,13 @@ void *consume(void *arg){
 		}
 	    fputs("\n", p->consumer_log);
 
-	    printf("p->consumer_idx = %d\n", p->consumer_idx);
+	    //printf("p->consumer_idx = %d\n", p->consumer_idx);
 
     	
     	/* Update the consumer index of the buffer */
     	p->consumer_idx++;
     	p->num_consumed++;
+    	//printf("num consumed = %d\n", p->num_consumed);
     	if(p->consumer_idx == BUFFER_SIZE){
     		p->consumer_idx = 0;
     		p->producer_idx = 0;
@@ -293,15 +297,16 @@ void *consume(void *arg){
     
     	/* If the buffer has been emptied, send signal() empty to producer */
     	if(p->consumer_idx == 0){
+    		//printf("sending signal to producer\n");
 		    pthread_cond_signal(&empty);
 		}
 
     	pthread_mutex_unlock(&mutex_c);
-    	printf("producer idx 2 = %d\n", p->producer_idx);
+    	//printf("producer idx 2 = %d\n", p->producer_idx);
 
   	}
 
-  	printf("consumer exit %ld\n", gettid());
+  	//printf("consumer exit %ld\n", gettid());
 
 	return NULL;
 }
@@ -328,7 +333,7 @@ void *produce(void *arg){
   	/* All threads enter here */
   	while(1){
 
-  		printf("producer tid = %ld\n", gettid());
+  		p->tids[gettid() % p->num_producer] = gettid();
 
   		/* All threads are stuck here until the thread who is using this mutex lock, unlocks the mutex */
     	pthread_mutex_lock(&mutex_p);
@@ -344,23 +349,22 @@ void *produce(void *arg){
 
     		while(getline(&line, &n, p->data_files[p->num_data_files_done]) != -1){
 
-    			printf("producer %ld reading %s", gettid(), line);
+    			//printf("producer %ld reading %s", gettid(), line);
     	
     			/* If the buffer is produced full, the producer will wait() for the empty signal */
     			while(p->producer_idx == BUFFER_SIZE){
-    				printf("producer %ld is waiting\n", gettid());
+    				//printf("producer %ld is waiting\n", gettid());
       				pthread_cond_wait(&empty, &mutex_temp);
-      				printf("producer %ld has been woken up\n", gettid());
+      				//printf("producer %ld has been woken up\n", gettid());
     			}
 
-    			printf("p->producer_idx = %d\n", p->producer_idx);
+    			//printf("p->producer_idx = %d\n", p->producer_idx);
       	
       			/* Otherwise, the producer will produce to the buffer */
 		      	if(strlen(line) > MAX_NAME_LENGTH){
 		      		strcpy(p->buffer[p->producer_idx], "DOMAIN NAME EXCEEDED MAX LENGTH");
       			}
       			else{
-      				fputs(line, p->producer_log);
 	      			line[strlen(line) - 1] = 0;
     	  			strcpy(p->buffer[p->producer_idx], line);
       			}
@@ -369,25 +373,26 @@ void *produce(void *arg){
 	      		/* Update the producer index of the buffer */
 	    	  	p->producer_idx++;
 	    	  	p->num_produced++;
-	    	  	printf("p->num_produced = %d\n", p->num_produced);
+	    	  	//printf("p->num_produced = %d\n", p->num_produced);
 
     	  		/* If the buffer is produced full or all domains have been read, signal() full to the consumer */
     	  		if(p->producer_idx == BUFFER_SIZE || p->num_produced == p->num_domains){
-    	  			printf("\nsend signal p->producer_idx = %d\n", p->producer_idx);
-    	  			printf("send signal p->num_produced = %d\n\n", p->num_produced);
-	      			printf("pthread cond broadcast full = %d\n", pthread_cond_broadcast(&full));
+    	  			//printf("\nsend signal p->producer_idx = %d\n", p->producer_idx);
+    	  			//printf("send signal p->num_produced = %d\n\n", p->num_produced);
+	      			pthread_cond_broadcast(&full);
 	      		}
     		}
-    		printf("done reading file\n");
 		}
 
 		/* Increment num data files serviced */
 	    p->num_data_files_done++;
+	    //printf("producer thread %ld done reading file\n", gettid());
+	    p->counter[gettid() % p->num_producer]++;
 	    pthread_mutex_unlock(&mutex_p);
   	}
 
 	free(line);
-	printf("producer exit %ld\n", gettid());
+	//printf("producer exit %ld\n", gettid());
 	return NULL;
 }
 
@@ -457,7 +462,7 @@ int main(int argc, char **argv){
   	num_data_files = get_num_data_files(argc);
   	FILE **data_files = malloc(sizeof(FILE*) * num_data_files);
   	
-  	/* Store all data files in a queue */
+  	/* Store all data files in array */
   	for(int i = 0; i < num_data_files; i++){
 
   		data_files[i] = open_data_files(argv[i + 5], data_files[i], 0);
@@ -483,6 +488,13 @@ int main(int argc, char **argv){
   
 
 
+  	/* tid stuff */
+  	int tids[num_producer];
+  	int counter[num_producer];
+  	for(int i = 0; i < num_producer; i++){
+  		counter[i] = 0;
+  	}
+
 
 
   	/* Initialize elements of type struct param */
@@ -498,6 +510,9 @@ int main(int argc, char **argv){
   	p.consumer_log = consumer_log;
   	p.producer_log = producer_log;
 
+  	p.num_producer = num_producer;
+  	p.tids = tids;
+  	p.counter = counter;
 
 
 
@@ -508,15 +523,14 @@ int main(int argc, char **argv){
 
 
 
-  	/* Create producer and consumer threads (who does dns lookup) */
+
+  	/* Create producer and consumer threads */
   	pthread_t tids_producer[num_producer];
   	pthread_t tids_consumer[num_consumer];
-
   	
   	for(int i = 0; i < num_consumer; i++){
     	pthread_create(&tids_consumer[i], NULL, consume, &p);
   	}
-
   	for(int i = 0; i < num_producer; i++){
     	pthread_create(&tids_producer[i], NULL, produce, &p);
   	}
@@ -531,8 +545,14 @@ int main(int argc, char **argv){
 
 
 
-
-
+  	for(int i = 0; i < num_producer; i++){
+  		fputs("Thread ", producer_log);
+  		fprintf(producer_log, "%d ", tids[i]);
+  		fputs("serviced ", producer_log);
+  		fprintf(producer_log, "%d ", counter[i]);
+  		fputs("files.\n", producer_log);
+  		//printf("%d %d\n", tids[i], counter[i]);
+  	}
 
 
 
@@ -547,7 +567,6 @@ int main(int argc, char **argv){
     	}
   	}
   	
-
   	free(data_files);
 
 	return 0;
