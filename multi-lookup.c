@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include "util.h"
 
 /* Define macros:
@@ -334,6 +335,7 @@ void *produce(void *arg){
   	while(1){
 
   		p->tids[gettid() % p->num_producer] = gettid();
+  		printf("tid = %ld\n", gettid());
 
   		/* All threads are stuck here until the thread who is using this mutex lock, unlocks the mutex */
     	pthread_mutex_lock(&mutex_p);
@@ -386,7 +388,7 @@ void *produce(void *arg){
 
 		/* Increment num data files serviced */
 	    p->num_data_files_done++;
-	    //printf("producer thread %ld done reading file\n", gettid());
+	    printf("thread %ld has finished reading a file.\n", gettid());
 	    p->counter[gettid() % p->num_producer]++;
 	    pthread_mutex_unlock(&mutex_p);
   	}
@@ -417,6 +419,8 @@ void *produce(void *arg){
 int main(int argc, char **argv){
 
 
+	struct timeval start, end;
+	gettimeofday(&start, NULL);
 
 
 
@@ -568,6 +572,10 @@ int main(int argc, char **argv){
   	}
   	
   	free(data_files);
+
+  	gettimeofday(&end, NULL);
+  	long seconds = end.tv_sec - start.tv_sec;
+  	printf("THE RUNNING TIME OF THIS PROGRAM IS %ld SECONDS\n", seconds);
 
 	return 0;
 }
