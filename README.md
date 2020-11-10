@@ -1,4 +1,4 @@
-README
+# Multithread DNS Lookup Project
 
 To compile:
 - type "make all" in the terminal
@@ -13,3 +13,5 @@ To run: valgrind ./multi-lookup <# requester> <# resolver> <requester log> <reso
 	- <data file>: Files that contain domain names
 
 Example: valgrind ./multi-lookup 1 1 serviced.txt results.txt names1.txt names2.txt names3.txt names4.txt names5.txt
+
+# Pager Predict Project
