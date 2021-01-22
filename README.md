@@ -19,5 +19,3 @@ valgrind: Checks for memory leaks
 <data file>: Files that contain domain names
 
 Example: valgrind ./multi-lookup 1 1 serviced.txt results.txt names1.txt names2.txt names3.txt names4.txt names5.txt
-
-# Pager Predict Project
